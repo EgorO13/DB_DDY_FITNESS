@@ -27,7 +27,12 @@ CREATE TABLE workout (product_id int PRIMARY KEY REFERENCES product(product_id) 
 CREATE TABLE service (product_id int PRIMARY KEY REFERENCES product(product_id) ON DELETE CASCADE ON UPDATE CASCADE, service_type service_enum NOT NULL, description varchar(50));
 CREATE TABLE purchase (purchase_id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, client_id int NOT NULL REFERENCES client(client_id) ON DELETE RESTRICT ON UPDATE CASCADE, staff_id int NOT NULL REFERENCES staff(staff_id) ON DELETE RESTRICT ON UPDATE CASCADE, purchase_type purchase_enum NOT NULL, purchase_date timestamp NOT NULL, all_price decimal(8, 2) NOT NULL, CONSTRAINT chk_purchase_price CHECK (all_price >= 0));
 CREATE TABLE package (purchase_id int PRIMARY KEY REFERENCES purchase(purchase_id) ON DELETE CASCADE ON UPDATE CASCADE, amount int NOT NULL, price decimal(8, 2) NOT NULL, discount int NOT NULL DEFAULT 0, remainder int NOT NULL, CONSTRAINT chk_package_amount CHECK (amount > 0), CONSTRAINT chk_package_price CHECK (price > 0), CONSTRAINT chk_package_discount CHECK (discount IN (0, 3, 5, 10, 15)), CONSTRAINT chk_package_remainder CHECK (remainder BETWEEN 0 AND amount));
-CREATE TABLE contract (purchase_id int PRIMARY KEY REFERENCES purchase(purchase_id) ON DELETE CASCADE ON UPDATE CASCADE, sub_id int NOT NULL REFERENCES sub(sub_id) ON DELETE RESTRICT ON UPDATE CASCADE, date_start date NOT NULL, date_end date NOT NULL, payment_type payment_enum NOT NULL, status contract_enum NOT NULL, CONSTRAINT chk_contract_dates CHECK (date_end >= date_start));
+CREATE TABLE contract (purchase_id int PRIMARY KEY REFERENCES purchase(purchase_id) ON DELETE CASCADE ON UPDATE CASCADE, sub_id int NOT NULL REFERENCES sub(sub_id) ON DELETE RESTRICT ON UPDATE CASCADE, date_start date NOT NULL, date_end date NOT NULL, payment_type payment_enum NOT NULL, installment_months int, status contract_enum NOT NULL, CONSTRAINT chk_contract_dates CHECK (date_end >= date_start),
+    CONSTRAINT chk_contract_installment CHECK (
+        (payment_type = 'full' AND installment_months IS NULL) OR 
+        (payment_type = 'installment' AND installment_months BETWEEN 2 AND 12)
+    )
+);
 CREATE TABLE booking (purchase_id int PRIMARY KEY REFERENCES purchase(purchase_id) ON DELETE CASCADE ON UPDATE CASCADE, product_id int NOT NULL REFERENCES product(product_id) ON DELETE RESTRICT ON UPDATE CASCADE, package_purchase_id int REFERENCES package(purchase_id) ON DELETE RESTRICT ON UPDATE CASCADE, date_booking timestamp NOT NULL, status booking_enum NOT NULL);
 CREATE TABLE plan (plan_id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, purchase_id int NOT NULL REFERENCES contract(purchase_id) ON DELETE CASCADE ON UPDATE CASCADE, amount decimal(8, 2) NOT NULL, pay_date date NOT NULL, CONSTRAINT chk_plan_amount CHECK (amount > 0));
 CREATE TABLE pay_dock (pay_dock_id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, purchase_id int NOT NULL REFERENCES purchase(purchase_id) ON DELETE RESTRICT ON UPDATE CASCADE, staff_id int NOT NULL REFERENCES staff(staff_id) ON DELETE RESTRICT ON UPDATE CASCADE, payment_date date NOT NULL, payment_check int NOT NULL UNIQUE, price decimal(8, 2) NOT NULL, CONSTRAINT chk_payment_price CHECK (price > 0));
@@ -108,15 +113,15 @@ def reset_and_fill_db():
                     duration_days = random.choice([30, 90, 180, 365])
                     d_start = p_date_dt.date()
                     p_type = "installment" if duration_days == 365 else "full"
+                    N = random.choice([3, 4, 6, 12]) if p_type == "installment" else None
                     multipliers = {30: 1, 90: 2.7, 180: 5.0, 365: 9.0}
                     calculated_sub_price = round(float(sub_info[sub_id]["price"]) * multipliers[duration_days], 2)
                     cursor.execute("INSERT INTO purchase (client_id, staff_id, purchase_type, purchase_date, all_price) VALUES (%s, %s, %s, %s, %s) RETURNING purchase_id, purchase_type, all_price;", (c_id, st_id, pur_type, p_date_dt, calculated_sub_price))
                     pur_id, _, final_price = cursor.fetchone()
-                    cursor.execute("INSERT INTO contract (purchase_id, sub_id, date_start, date_end, payment_type, status) VALUES (%s, %s, %s, %s, %s, %s);", (pur_id, sub_id, d_start, d_start + timedelta(days=duration_days), p_type, "paid"))
+                    cursor.execute("INSERT INTO contract (purchase_id, sub_id, date_start, date_end, payment_type, installment_months, status) VALUES (%s, %s, %s, %s, %s, %s, %s);", (pur_id, sub_id, d_start, d_start + timedelta(days=duration_days), p_type, N, "paid"))
                     if sub_info[sub_id]["name"] == "Infinity":
                         client_active_infinity.add(c_id)
                     if p_type == "installment":
-                        N = random.choice([3, 4, 6, 12])
                         single_payment = round((float(final_price) / N) * (1 + (10 if N <= 6 else 15) / 100), 2)
                         for month in range(N):
                             cursor.execute("INSERT INTO plan (purchase_id, amount, pay_date) VALUES (%s, %s, %s);", (pur_id, single_payment, d_start + timedelta(days=30 * month)))
